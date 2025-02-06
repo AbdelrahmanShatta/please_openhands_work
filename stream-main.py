@@ -1919,4 +1919,4 @@ for chunk in ollama.generate(model=model,prompt=prompt,stream=True):
     print(chunk["response"],end="",flush=True)
 
 camelCase="lmaoo fuck off"
-    bad_indentaiton="lol"
+ bad_indentaiton="lol"
