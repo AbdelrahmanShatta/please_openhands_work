@@ -1,0 +1,78 @@
+name: OpenHands Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install OpenHands dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openhands-ai
+
+      - name: Create OpenHands config
+        run: |
+          cat > openhands_config.txt << 'EOL'
+          # OpenHands Custom Instructions for Code Quality Review
+
+          **Role:** You are an expert code reviewer.  
+          **Task:** Evaluate pull requests based on our established code standards.
+
+          **Standard Code Template:**  
+          1. Code must follow our naming conventions (e.g., snake_case for Python, camelCase for JavaScript).  
+          2. Indentation and formatting must be consistent.  
+          3. There should be clear inline comments and proper documentation for non-trivial logic.  
+          4. No redundant or dead code is allowed.  
+          5. The code should pass all automated tests and static analysis checks.
+
+          **Response Format:**  
+          - If the PR fully adheres to the above standards, output exactly: `GOOD`.  
+          - If the PR deviates from these standards in any significant way, output exactly: `BAD`.
+          EOL
+
+      - name: Run OpenHands Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path')
+          
+          # Initialize review decision
+          FINAL_DECISION="GOOD"
+          
+          # Review each changed file
+          for file in $PR_FILES; do
+            if [[ -f "$file" ]]; then
+              # Get file content and run through OpenHands
+              REVIEW=$(cat "$file" | openhands-ai --config openhands_config.txt)
+              
+              # If any file gets a BAD review, mark the overall PR as BAD
+              if [[ "$REVIEW" == *"BAD"* ]]; then
+                FINAL_DECISION="BAD"
+                break
+              fi
+            fi
+          done
+          
+          # Post the review decision as a PR comment
+          if [ "$FINAL_DECISION" = "GOOD" ]; then
+            gh pr comment ${{ github.event.pull_request.number }} --body "✅ OpenHands Code Review: All files meet our code quality standards."
+            gh pr review ${{ github.event.pull_request.number }} --approve -b "Code quality standards met."
+          else
+            gh pr comment ${{ github.event.pull_request.number }} --body "❌ OpenHands Code Review: Some files do not meet our code quality standards. Please review and update according to the guidelines."
+            gh pr review ${{ github.event.pull_request.number }} --request-changes -b "Code quality standards not met. Please address the issues."
+          fi
