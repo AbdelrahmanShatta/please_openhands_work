@@ -1,6 +1,5 @@
 name: Auto Code Quality Review & Merge
 
-# Declare the permissions required for the reusable workflow.
 permissions:
   contents: write
   issues: write
@@ -12,9 +11,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Reusable workflow job: call the OpenHands resolver directly at the jobs level.
   call-openhands-resolver:
+    name: AI Code Quality Review
     uses: All-Hands-AI/OpenHands/.github/workflows/openhands-resolver.yml@main
+    continue-on-error: true  # Ensure subsequent jobs run even if this fails
     with:
       macro: "@quality-check"
       max_iterations: 10
@@ -28,51 +28,48 @@ jobs:
   run-tests:
     needs: call-openhands-resolver
     runs-on: ubuntu-latest
+    # Only run tests if quality check succeeded
+    if: needs.call-openhands-resolver.result == 'success'
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           pip install poetry
           poetry install
-
-      - name: Build Environment
-        run: make build
-
-      - name: Run Generated Tests
-        run: |
-          poetry run pytest --forked -n auto --cov=openhands --cov-report=xml -svv ./tests/unit
-
-      - name: Upload Coverage Report
-        uses: codecov/codecov-action@v4
+      - name: Run tests
+        run: poetry run pytest --forked -n auto --cov=openhands --cov-report=xml -svv ./tests/unit
+      - uses: codecov/codecov-action@v4
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   auto-merge:
-    needs: call-openhands-resolver
-    if: needs.call-openhands-resolver.outputs.quality_result == 'GOOD'
+    needs: [call-openhands-resolver, run-tests]
     runs-on: ubuntu-latest
+    # Only merge if both quality check and tests succeeded
+    if: |
+      needs.call-openhands-resolver.result == 'success' &&
+      needs.call-openhands-resolver.outputs.quality_result == 'GOOD' &&
+      needs.run-tests.result == 'success'
     steps:
-      - name: Auto Merge PR
-        uses: peter-evans/merge-pull-request@v3
+      - uses: peter-evans/merge-pull-request@v3
         with:
           merge_method: squash
           commit_title: "Auto-merged via AI code quality check"
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
-  reject-pr:
-    needs: call-openhands-resolver
-    if: needs.call-openhands-resolver.outputs.quality_result != 'GOOD'
+  handle-rejection:
+    needs: [call-openhands-resolver, run-tests]
     runs-on: ubuntu-latest
+    if: always()  # Always run to handle both success and failure cases
     steps:
-      - name: Post Comment Rejecting PR
+      - name: Handle quality check failure
+        if: |
+          needs.call-openhands-resolver.result != 'success' ||
+          (needs.call-openhands-resolver.outputs.quality_result != 'GOOD' && needs.call-openhands-resolver.result == 'success')
         uses: actions/github-script@v6
         with:
           script: |
@@ -80,5 +77,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: "❌ The code quality review failed. Please revise your changes to meet the required standards."
-            })
+              body: "❌ PR rejected. Reason: " + (
+               
