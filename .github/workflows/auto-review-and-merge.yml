@@ -6,16 +6,30 @@ permissions:
   issues: write
   pull-requests: write
 
-# Trigger on pull request events and manual dispatch
+# Only trigger on pull request events
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  workflow_dispatch:
 
 jobs:
-  # First run tests to ensure code is working
+  # Call OpenHands reusable workflow at the job level
+  quality-review:
+    uses: All-Hands-AI/OpenHands/.github/workflows/openhands-resolver.yml@main
+    with:
+      macro: "@quality-check"
+      max_iterations: 10
+      llm_model: "anthropic/claude-3-5-sonnet-20241022"
+    secrets:
+      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+      PAT_USERNAME: ${{ secrets.PAT_USERNAME }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+
+  # Run tests after quality review
   run-tests:
+    needs: quality-review
     runs-on: ubuntu-latest
+    if: needs.quality-review.outputs.quality_result == 'GOOD'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,7 +38,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'  # Enable pip caching
+          cache: 'pip'
           
       - name: Install dependencies
         run: |
@@ -34,47 +48,16 @@ jobs:
           poetry install --no-interaction --no-root
           
       - name: Run tests
-        id: run-tests
         run: |
-          poetry run pytest --forked -n auto \
-            -svv ./tests/unit \
-            || echo "::set-output name=tests_failed::true"
+          poetry run pytest --forked -n auto -svv ./tests/unit
 
-  # Then run AI code quality review
-  code-quality-review:
-    needs: run-tests
+  # Auto-merge if everything passes
+  auto-merge:
+    needs: [quality-review, run-tests]
     runs-on: ubuntu-latest
-    outputs:
-      quality_result: ${{ steps.quality-check.outputs.result }}
+    if: needs.quality-review.outputs.quality_result == 'GOOD'
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Run OpenHands code quality check
-        id: quality-check
-        uses: All-Hands-AI/OpenHands/.github/workflows/openhands-resolver@main
-        with:
-          macro: "@quality-check"
-          max_iterations: 10
-          llm_model: "anthropic/claude-3-5-sonnet-20241022"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-          PAT_USERNAME: ${{ secrets.PAT_USERNAME }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-
-  # Handle PR based on quality review results
-  process-pr:
-    needs: code-quality-review
-    runs-on: ubuntu-latest
-    steps:
-      - name: Get quality check result
-        id: get-result
-        run: echo "::set-output name=result::${{ needs.code-quality-review.outputs.quality_result }}"
-
-      - name: Auto-merge if quality check passed
-        if: steps.get-result.outputs.result == 'GOOD'
+      - name: Auto-merge PR
         uses: pascalgn/automerge-action@v0.15.6
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
@@ -84,23 +67,27 @@ jobs:
           MERGE_RETRIES: 3
           MERGE_RETRY_SLEEP: 10000
 
-      - name: Comment on PR if quality check failed
-        if: steps.get-result.outputs.result != 'GOOD'
+  # Post rejection comment if quality check fails
+  reject-pr:
+    needs: quality-review
+    runs-on: ubuntu-latest
+    if: needs.quality-review.outputs.quality_result != 'GOOD'
+    steps:
+      - name: Comment on PR
         uses: actions/github-script@v6
         with:
           script: |
-            const issueNumber = context.issue.number;
             const message = `❌ Code quality review failed. Please address the following:
             
-            1. Review the test results
-            2. Check the quality review feedback
-            3. Make necessary improvements and update the PR
+            1. Review the quality review feedback
+            2. Make necessary improvements
+            3. Update the pull request
             
-            Once you've made the changes, the workflow will automatically re-run.`;
+            The workflow will automatically re-run when you push new changes.`;
             
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: issueNumber,
+              issue_number: context.issue.number,
               body: message
             });
