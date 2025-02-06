@@ -23,7 +23,7 @@ jobs:
         id: quality-check
         run: |
           # Temporary echo for testing
-          echo "::set-output name=result::GOOD"
+          echo "result=GOOD" >> $GITHUB_OUTPUT
           echo "Quality check completed"
 
   auto-merge:
