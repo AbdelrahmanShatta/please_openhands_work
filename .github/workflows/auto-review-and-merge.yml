@@ -1,12 +1,18 @@
 name: Auto Code Quality Review & Merge
 
+# Declare the permissions required for the reusable workflow.
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
 on:
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 jobs:
-  # Call the reusable OpenHands resolver workflow.
+  # Reusable workflow job: call the OpenHands resolver directly at the jobs level.
   call-openhands-resolver:
     uses: All-Hands-AI/OpenHands/.github/workflows/openhands-resolver.yml@main
     with:
@@ -18,10 +24,7 @@ jobs:
       PAT_USERNAME: ${{ secrets.PAT_USERNAME }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-    # It is assumed that the reusable workflow sets an output named quality_result.
-    # For example, it may output "GOOD" or "BAD" based on its evaluation.
-  
-  # Run tests after the resolver job completes.
+
   run-tests:
     needs: call-openhands-resolver
     runs-on: ubuntu-latest
@@ -51,7 +54,6 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  # If the quality check output is GOOD, auto-merge the PR.
   auto-merge:
     needs: call-openhands-resolver
     if: needs.call-openhands-resolver.outputs.quality_result == 'GOOD'
@@ -65,7 +67,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
-  # If the quality check output is not GOOD, post a comment to reject the PR.
   reject-pr:
     needs: call-openhands-resolver
     if: needs.call-openhands-resolver.outputs.quality_result != 'GOOD'
