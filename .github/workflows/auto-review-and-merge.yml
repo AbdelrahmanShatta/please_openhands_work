@@ -1,0 +1,84 @@
+name: Auto Code Quality Review & Merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+env:
+  # These can be overridden by repo variables or secrets as needed.
+  OPENHANDS_MACRO: "${{ vars.OPENHANDS_MACRO || '@quality-check' }}"
+  OPENHANDS_MAX_ITER: "${{ vars.OPENHANDS_MAX_ITER || 10 }}"
+  LLM_MODEL: "${{ vars.LLM_MODEL || 'anthropic/claude-3-5-sonnet-20241022' }}"
+
+jobs:
+  evaluate-code-quality:
+    runs-on: ubuntu-latest
+    outputs:
+      quality_result: ${{ steps.set-quality.outputs.result }}
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      - name: Evaluate Code Quality with OpenHands
+        id: evaluate
+        # Here we reuse the OpenHands resolver workflow as a base.
+        # (In your custom use-case, you’d instruct OpenHands to review code quality.)
+        uses: All-Hands-AI/OpenHands/.github/workflows/openhands-resolver.yml@main
+        with:
+          macro: ${{ env.OPENHANDS_MACRO }}
+          max_iterations: ${{ env.OPENHANDS_MAX_ITER }}
+          base_container_image: ""  # Set if you have a custom sandbox image
+          LLM_MODEL: ${{ env.LLM_MODEL }}
+        secrets:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          PAT_USERNAME: ${{ secrets.PAT_USERNAME }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+
+      - name: Extract Quality Result
+        id: set-quality
+        run: |
+          # Assume the OpenHands workflow writes its final evaluation into a file (e.g., "result.txt")
+          # with a simple output: either "good" or "bad".
+          if [ -f result.txt ]; then
+            result=$(cat result.txt)
+            echo "Result: $result"
+            echo "::set-output name=result::$result"
+          else
+            echo "result.txt not found; defaulting to 'bad'"
+            echo "::set-output name=result::bad"
+          fi
+
+  auto-merge:
+    needs: evaluate-code-quality
+    if: needs.evaluate-code-quality.outputs.quality_result == 'good'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      - name: Auto Merge PR
+        uses: peter-evans/merge-pull-request@v3
+        with:
+          merge_method: squash
+          commit_title: "Auto-merged via AI code quality check"
+          # The action automatically merges the PR if conditions are met.
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+  reject-pr:
+    needs: evaluate-code-quality
+    if: needs.evaluate-code-quality.outputs.quality_result != 'good'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post Comment Rejecting PR
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: "❌ The code quality review failed. The AI agent determined that the PR contains poor or gibberish code. Please revise your changes."
+            })
