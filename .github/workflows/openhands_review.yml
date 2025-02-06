@@ -59,10 +59,16 @@ jobs:
             --issue-number ${{ github.event.pull_request.number }} \
             --issue-type pr
 
-          # Check the resolver output
+          # Check the resolver output and handle auto-merge
           if grep -q '"success":true' output/output.jsonl; then
-            gh pr comment ${{ github.event.pull_request.number }} --body "✅ OpenHands Code Review: All files meet our code quality standards."
+            gh pr comment ${{ github.event.pull_request.number }} --body "✅ OpenHands Code Review: All files meet our code quality standards. Auto-merging PR."
             gh pr review ${{ github.event.pull_request.number }} --approve -b "Code quality standards met."
+            
+            # Enable auto-merge
+            gh pr merge ${{ github.event.pull_request.number }} --auto --squash
+            
+            # Wait for checks to pass and merge immediately if possible
+            gh pr merge ${{ github.event.pull_request.number }} --squash --delete-branch
           else
             gh pr comment ${{ github.event.pull_request.number }} --body "❌ OpenHands Code Review: Some files do not meet our code quality standards. Please review and update according to the guidelines."
             gh pr review ${{ github.event.pull_request.number }} --request-changes -b "Code quality standards not met. Please address the issues."
